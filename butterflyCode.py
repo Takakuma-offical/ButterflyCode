@@ -1,168 +1,207 @@
-# Windows用のUnity C#エディタ（PyQt5版）
-# 機能：ファイル読み書き、C#用シンタックスハイライト、タブ対応、ダークモード
-
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QFileDialog, QPlainTextEdit, QAction,
-    QMessageBox, QTabWidget, QWidget, QVBoxLayout
-)
-from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter
-from PyQt5.QtCore import Qt, QRegExp
 import sys
 import os
+import subprocess
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QFileSystemModel, QTreeView,
+    QSplitter, QTextEdit, QFileDialog, QAction, QVBoxLayout,
+    QWidget, QPushButton, QPlainTextEdit, QMessageBox
+)
+from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter
+from PyQt5.QtCore import Qt, QRegularExpression
 
 
-class CSharpHighlighter(QSyntaxHighlighter):
+class JavaHighlighter(QSyntaxHighlighter):
     def __init__(self, document):
         super().__init__(document)
-        keyword_format = QTextCharFormat()
-        keyword_format.setForeground(QColor("#FF9D00"))
-        keyword_format.setFontWeight(QFont.Bold)
+        self.rules = []
+
+        # キーワード → 青 (#0000FF)
+        keywordFormat = QTextCharFormat()
+        keywordFormat.setForeground(QColor("#0000FF"))
         keywords = [
-            "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char",
-            "checked", "class", "const", "continue", "decimal", "default", "delegate",
-            "do", "double", "else", "enum", "event", "explicit", "extern", "false",
-            "finally", "fixed", "float", "for", "foreach", "goto", "if", "implicit", "in",
-            "int", "interface", "internal", "is", "lock", "long", "namespace", "new",
-            "null", "object", "operator", "out", "override", "params", "private",
-            "protected", "public", "readonly", "ref", "return", "sbyte", "sealed", "short",
-            "sizeof", "stackalloc", "static", "string", "struct", "switch", "this",
-            "throw", "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe",
-            "ushort", "using", "virtual", "void", "volatile", "while"
+            "abstract", "assert", "boolean", "break", "byte", "case", "catch",
+            "char", "class", "const", "continue", "default", "do", "double",
+            "else", "enum", "extends", "final", "finally", "float", "for",
+            "goto", "if", "implements", "import", "instanceof", "int",
+            "interface", "long", "native", "new", "null", "package",
+            "private", "protected", "public", "return", "short", "static",
+            "strictfp", "super", "switch", "synchronized", "this", "throw",
+            "throws", "transient", "try", "void", "volatile", "while"
         ]
-        self.rules = [(QRegExp(r'\b' + kw + r'\b'), keyword_format) for kw in keywords]
+        for kw in keywords:
+            pattern = QRegularExpression(rf"\b{kw}\b")
+            self.rules.append((pattern, keywordFormat))
 
-        comment_format = QTextCharFormat()
-        comment_format.setForeground(QColor("#6A9955"))
-        self.rules.append((QRegExp("//[^\n]*"), comment_format))
+        # 変数（識別子） → 黒（標準色なので設定なし）
 
-        string_format = QTextCharFormat()
-        string_format.setForeground(QColor("#CE9178"))
-        self.rules.append((QRegExp("\".*\""), string_format))
+        # 文字列リテラル → 赤 (#A31515)
+        stringFormat = QTextCharFormat()
+        stringFormat.setForeground(QColor("#A31515"))
+        self.rules.append((QRegularExpression(r"\".*\""), stringFormat))
+
 
     def highlightBlock(self, text):
         for pattern, fmt in self.rules:
-            expression = QRegExp(pattern)
-            index = expression.indexIn(text)
-            while index >= 0:
-                length = expression.matchedLength()
-                self.setFormat(index, length, fmt)
-                index = expression.indexIn(text, index + length)
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                match = it.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), fmt)
 
 
 class CodeEditor(QPlainTextEdit):
     def __init__(self):
         super().__init__()
         self.setFont(QFont("Consolas", 12))
-        self.setStyleSheet("background-color: #1e1e1e; color: white;")
-        self.highlighter = CSharpHighlighter(self.document())
+        self.highlighter = JavaHighlighter(self.document())
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+        if event.key() == Qt.Key_Return:
             cursor = self.textCursor()
+            cursor.movePosition(cursor.StartOfBlock)
             cursor.select(cursor.LineUnderCursor)
-            current_line = cursor.selectedText()
-
-            # 現在の行のインデント取得
-            indent = ""
-            for char in current_line:
-                if char in [' ', '\t']:
-                    indent += char
-                else:
-                    break
-
-            # {} に応じてインデントを追加調整
-            extra_indent = ""
-            if "{" in current_line.strip() and not "}" in current_line:
-                extra_indent = "    "  # 4スペース
-
-            super().keyPressEvent(event)  # 通常の改行処理
-            self.insertPlainText(indent + extra_indent)
+            line = cursor.selectedText()
+            indent = len(line) - len(line.lstrip(' '))
+            if line.strip().endswith('{'):
+                indent += 4
+            super().keyPressEvent(event)
+            self.insertPlainText(' ' * indent)
         else:
             super().keyPressEvent(event)
 
 
-class EditorTab(QWidget):
-    def __init__(self, file_path=None):
-        super().__init__()
-        self.layout = QVBoxLayout(self)
-        self.editor = CodeEditor()
-        self.file_path = file_path
-        self.layout.addWidget(self.editor)
-        if file_path:
-            with open(file_path, "r", encoding="utf-8") as f:
-                self.editor.setPlainText(f.read())
-
-
-class UnityCSharpEditor(QMainWindow):
+class JavaEditorMain(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Unity C# Editor")
-        self.resize(800, 600)
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-        self.init_menu()
+        self.setWindowTitle("Java Editor")
+        self.resize(1000, 700)
 
-    def init_menu(self):
+        self.editor = CodeEditor()
+        self.console = QTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setFixedHeight(150)
+
+        self.tree = QTreeView()
+        self.model = QFileSystemModel()
+        self.model.setRootPath(os.getcwd())
+        self.tree.setModel(self.model)
+        self.tree.setRootIndex(self.model.index(os.getcwd()))
+        self.tree.clicked.connect(self.open_file)
+
+        splitter = QSplitter()
+        splitter.addWidget(self.tree)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(self.editor)
+
+        self.build_btn = QPushButton("ビルド＆実行")
+        self.build_btn.clicked.connect(self.build_and_run)
+        right_layout.addWidget(self.build_btn)
+
+        right_layout.addWidget(self.console)
+        right_widget.setLayout(right_layout)
+
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(1, 3)
+
+        self.setCentralWidget(splitter)
+
+        self.current_file = None
+
         menubar = self.menuBar()
-
         file_menu = menubar.addMenu("ファイル")
 
         open_action = QAction("開く", self)
-        open_action.triggered.connect(self.open_file)
+        open_action.triggered.connect(self.open_dialog)
         file_menu.addAction(open_action)
 
         save_action = QAction("保存", self)
         save_action.triggered.connect(self.save_file)
         file_menu.addAction(save_action)
 
-        save_as_action = QAction("名前を付けて保存", self)
-        save_as_action.triggered.connect(self.save_file_as)
-        file_menu.addAction(save_as_action)
-
-        new_action = QAction("新規", self)
-        new_action.triggered.connect(self.new_file)
+        new_action = QAction("新規作成", self)
+        new_action.triggered.connect(self.new_java_file)
         file_menu.addAction(new_action)
 
-        close_action = QAction("終了", self)
-        close_action.triggered.connect(self.close)
-        file_menu.addAction(close_action)
-
-    def new_file(self):
-        editor_tab = EditorTab()
-        self.tabs.addTab(editor_tab, "新規")
-        self.tabs.setCurrentWidget(editor_tab)
-
-    def open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "ファイルを開く", "", "C#ファイル (*.cs);;すべてのファイル (*)")
+    def open_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "ファイルを開く", "", "Java Files (*.java)")
         if path:
-            editor_tab = EditorTab(path)
-            filename = os.path.basename(path)
-            self.tabs.addTab(editor_tab, filename)
-            self.tabs.setCurrentWidget(editor_tab)
+            self.load_file(path)
+
+    def load_file(self, path):
+        try:
+            with open(path, 'r', encoding="utf-8") as f:
+                self.editor.setPlainText(f.read())
+            self.current_file = path
+            self.setWindowTitle(f"Java Editor - {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"ファイルを開けませんでした:\n{e}")
+
+    def open_file(self, index):
+        path = self.model.filePath(index)
+        if os.path.isfile(path) and path.endswith(".java"):
+            self.load_file(path)
 
     def save_file(self):
-        current_tab = self.tabs.currentWidget()
-        if current_tab:
-            if current_tab.file_path:
-                with open(current_tab.file_path, "w", encoding="utf-8") as f:
-                    f.write(current_tab.editor.toPlainText())
-            else:
-                self.save_file_as()
+        if not self.current_file:
+            path, _ = QFileDialog.getSaveFileName(self, "名前を付けて保存", "", "Java Files (*.java)")
+            if not path:
+                return
+            self.current_file = path
+        try:
+            with open(self.current_file, 'w', encoding="utf-8") as f:
+                f.write(self.editor.toPlainText())
+            self.console.append(f"[✔] 保存しました: {self.current_file}")
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"保存に失敗しました:\n{e}")
 
-    def save_file_as(self):
-        current_tab = self.tabs.currentWidget()
-        if current_tab:
-            path, _ = QFileDialog.getSaveFileName(self, "名前を付けて保存", "", "C#ファイル (*.cs);;すべてのファイル (*)")
-            if path:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(current_tab.editor.toPlainText())
-                current_tab.file_path = path
-                self.tabs.setTabText(self.tabs.currentIndex(), os.path.basename(path))
+    def new_java_file(self):
+        path, _ = QFileDialog.getSaveFileName(self, "新規Javaファイル", "", "Java Files (*.java)")
+        if path:
+            classname = os.path.splitext(os.path.basename(path))[0]
+            template = f"""public class {classname} {{
+    public static void main(String[] args) {{
+        System.out.println("Hello, world!");
+    }}
+}}"""
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(template)
+                self.load_file(path)
+            except Exception as e:
+                QMessageBox.warning(self, "エラー", f"ファイル作成失敗:\n{e}")
+
+    def build_and_run(self):
+        if not self.current_file:
+            QMessageBox.warning(self, "警告", "まずファイルを保存してください。")
+            return
+        self.save_file()
+
+        dir_path = os.path.dirname(self.current_file)
+        base_name = os.path.basename(self.current_file)
+        class_name = os.path.splitext(base_name)[0]
+
+        compile_cmd = ["javac", base_name]
+        run_cmd = ["java", class_name]
+
+        self.console.clear()
+        try:
+            proc = subprocess.run(compile_cmd, cwd=dir_path, capture_output=True, text=True)
+            if proc.returncode != 0:
+                self.console.append("[❌] コンパイルエラー:\n" + proc.stderr)
+                return
+            self.console.append("[✔] コンパイル成功")
+
+            proc = subprocess.run(run_cmd, cwd=dir_path, capture_output=True, text=True)
+            self.console.append(proc.stdout)
+            if proc.stderr:
+                self.console.append(proc.stderr)
+        except Exception as e:
+            self.console.append(f"[エラー] {e}")
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    editor = UnityCSharpEditor()
-    editor.show()
+    window = JavaEditorMain()
+    window.show()
     sys.exit(app.exec_())
-
