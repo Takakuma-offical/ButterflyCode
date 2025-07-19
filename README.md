@@ -1,6 +1,6 @@
 # ButterflyCode
 This is a code editor created by takakuma.
-It is an open-source IDE for Unity C# development.
+It is an open-source IDE for Java development.
 You are allowed to freely use, modify, and integrate this source code for commercial purposes.
 However, proper credit must be given in advance.
 
